@@ -1,0 +1,7 @@
+The presentation materials for Edward A. Roualdes, Access Stan models from your favorite language with BridgeStan, can be found at the following URL
+
+https://roualdes.us/presentations/stancon23
+
+In the slides linked above, I offer a pre-baked Google Colab notebook for those who want to actively follow along.  The link to the notebook is contained in the slides above, but for completeness here it is 
+
+https://colab.research.google.com/drive/1iRMInJVNRTyaMFfaz9k7KlRc7fh_J63Q?usp=sharing
