@@ -1,0 +1,6 @@
+Slides available at 
+https://docs.google.com/presentation/d/1briLKtRqSRTdlLq_45dRgAln-tDOYf_4/edit?usp=sharing&ouid=115837526548380989965&rtpof=true&sd=true
+
+Code and further write up:
+https://github.com/WardBrian/holoml-in-stan
+https://brianward.dev/holoml-in-stan/HoloML%20in%20Stan.html
