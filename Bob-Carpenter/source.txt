@@ -1,0 +1,3 @@
+The LaTeX source and images are available here:
+
+https://github.com/bob-carpenter/talks/tree/master/stancon2023
