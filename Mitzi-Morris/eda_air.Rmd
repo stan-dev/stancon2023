@@ -1,0 +1,234 @@
+# Exploratory Data Analysis - Air Pollution Example
+
+
+### Goals
+
+* Assess the quantity, quality of your data.
+* Is there structure in the data that needs to be modeled?
+* Which features are relevant for the mode?
+
+
+```{r}
+# import all libraries used in this notebook
+require(sf)
+require(geojsonio)
+require(ggplot2)
+require(dplyr)
+suppressMessages(library(sf))
+suppressMessages(library(geojsonio))
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+options(width = 100)
+```
+
+## Dataset: Exposure to particulate matter less than 2.5 microns in diameter
+
+
+Our goal is to build a model of ground-level air pollution, using measurements from ground monitors together
+with satellite imaging data.
+The dataset is taken from github repository: https://github.com/jgabry/bayes-vis-paper
+which contain all materials for the paper **_Visualization in Bayesian workflow_**:    
+
+Gabry, J. , Simpson, D. , Vehtari, A. , Betancourt, M. and Gelman, A. (2019),     
+Visualization in Bayesian workflow. _J. R. Stat. Soc. A_, 182: 389-402. doi:10.1111/rssa.12378
+
+* Published JRSS version: https://rss.onlinelibrary.wiley.com/doi/full/10.1111/rssa.12378
+* arXiv preprint: https://arxiv.org/pdf/1709.01449.pdf (includes Supplementary Materials in appendix)
+
+A local version of the raw data for this paper is in the `data` directory, named `GM_spdf.RData`.
+This [RDATA file](https://github.com/jgabry/bayes-vis-paper/blob/master/bayes-vis.RData) contains a single R [SpatialPointsDataFrame](https://rdrr.io/cran/sp/man/SpatialPoints.html).
+
+We have converted this to a [GeoJson](https://geojson.org) file, `data/air_spdf.geojson` which contains just the information needed for this analysis.
+
+The dataset for this paper consists of measurements of ambient ${PM}_{2.5}$ collected from ground monitors
+together with the corresponding measurement from high-resolution satellite data for that geo-location.
+The data was collected accros 100 countries, which have been grouped into 7 categories by the World Health Organization (WHO).
+Each observation consists of the following:
+
+- 3-letter ISO country code
+- location name
+- a pair of latitude, longitude coordinates (in WGS84)
+- ${PM}_{2.5}$ measurements from ground monitors, and log(ground PM)
+- ${PM}_{2.5}$ measurements from via high-resolution satellite data, and log(satelite PM)
+- World Health Organization (WHO) super-region name
+- 6-component hierarchical clustering of ground monitor measurements
+- 6-component hierarchical clustering of log ground monitor measurements
+
+
+```{r}
+pm_gdf = geojson_read("data/air_spdf.geojson", parse=TRUE, what="sp", stringsAsFactors=TRUE)
+sites <- st_as_sf(pm_gdf)
+sites$super_region_name <- factor(sites$super_region_name)
+str(sites)
+```
+
+
+```{r}
+head(sites)
+```
+
+What is the range of observed measurements of ${PM}_{2.5}$ and log ${PM}_{2.5}$ from ground monitors and satellites?
+
+
+```{r}
+cat("pm_25")
+summary(sites$pm25)
+cat("log_pm")
+summary(sites$log_pm25)
+cat("sat_2014")
+summary(sites$sat_2014)
+cat("log_sat")
+summary(sites$log_sat)
+```
+
+To properly visualize the distribution of measurements around the globe we need a map which contains country boundaries.
+We have downloaded a world map shapefile (in coordinate system WGS84) from
+[Natural Earth](https://www.naturalearthdata.com/), which provides free public domain datasets.
+
+We add the per-country WHO super region names and cluster regions to the world map so that we can color countries by super region and clustered region.
+
+
+```{r}
+world_map_gdf = st_read(dsn = "data/ne_110m_admin_0_countries", layer="ne_110m_admin_0_countries")
+countries <- as.data.frame(sites) %>% select(iso3, super_region_name, super_region, cluster_region, cluster_log_region) %>% distinct()
+world_map_plus_gdf <- merge(world_map_gdf, countries, by.x = 'ISO_A3_EH', by.y = 'iso3', all.x = TRUE)
+
+options(repr.plot.width=20, repr.plot.height=10)
+ggplot() +  
+ geom_sf(data = world_map_plus_gdf, aes(fill=factor(super_region_name)), alpha=0.1) +
+ geom_sf(data = sites, aes(color=factor(super_region_name))) +
+ scale_color_manual(values = c('red', 'orange', 'magenta', 'green', 'purple', 'blue', 'cyan')) +
+ scale_fill_manual(values = c('red', 'orange', 'magenta', 'green', 'purple', 'blue', 'cyan', 'ivory')) +
+         guides(fill='none')
+```
+
+Alternatively, we can color countries by region and show ground monitor points by log_pm25 readings.   Green and yellows indicate low readings, red and orange indicate high readings.
+
+
+```{r}
+options(repr.plot.width=20, repr.plot.height=10)
+ggplot() +  
+ geom_sf(data = world_map_plus_gdf, aes(fill=factor(super_region_name)), alpha=0.2) +
+ geom_sf(data = sites, aes(color=log_pm25)) +
+ scale_color_gradient2(low='green', mid='yellow', high='red', midpoint=2.8) +
+ scale_fill_manual(values = c('red', 'orange', 'magenta', 'green', 'purple', 'blue', 'cyan', 'ivory'))
+```
+
+## Data structure
+
+The data has two levels of grouping:  low-level grouping by country (107 countries), and high-level grouping by super-region (7 categories) or cluster-region (6 clusters).
+
+### Ground monitors per region
+
+
+```{r}
+options(repr.plot.width=10, repr.plot.height=5)
+ggplot() +
+    geom_bar(data=sites, aes(x=super_region, fill=factor(super_region_name))) +
+    scale_fill_manual(values = c('red', 'orange', 'magenta', 'green', 'purple', 'blue', 'cyan')) +
+    ggtitle('Ground Monitors per Region') + xlab('') + labs(fill='Super Region')
+```
+
+### Ground monitors per country
+
+The number of per-country ground monitors depends on the size, overall development, and population density of the country.  China, the US, and India dominate, followed by other high income regions.
+
+
+```{r}
+sites %>%
+  group_by(iso3) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  head(5)
+```
+
+
+```{r}
+counts = sites %>%
+  select(iso3) %>%
+  count(iso3)
+
+print(summary(counts$n))
+```
+
+Of these 107 countries surveyed, the median number of monitors per country is 9. We can visualize this distribution as a bar plot. Is this useful?
+
+
+```{r}
+ggplot() +
+    geom_bar(data=sites, aes(x=iso3, fill=factor(super_region_name))) +
+    scale_fill_manual(values = c('red', 'orange', 'magenta', 'green', 'purple', 'blue', 'cyan')) +
+    ggtitle('Ground Monitors per Country') + xlab('region') + labs(fill='Super Region')
+```
+
+## Which features to use in the model?
+
+Gabry et al consider 3 alternatives:
+
+* Complete pooling - regress ground monitor readings on satellite data; all sites are the same.
+* Partial pooling by WHO super region
+* Partial pooling based on hierachical clustering of country-level average of ground monitor readings
+   + here we also consider clustering on average of *log* ground monitor reading
+
+
+### Cluster by ground monitor ${PM}_{2.5}$
+
+What are the groupings for hierarhical clustering by ground monitor ${PM}_{2.5}$?
+
+
+```{r}
+cat("Sites per cluster_region")
+table(sites$cluster_region)
+```
+
+
+```{r}
+ggplot() +
+    geom_bar(data=sites, aes(x=factor(cluster_region), fill=factor(cluster_region)))
+```
+
+
+```{r}
+options(repr.plot.width=20, repr.plot.height=10)
+ggplot() +  
+ geom_sf(data = world_map_plus_gdf, aes(fill=factor(cluster_region)))
+```
+
+
+```{r}
+options(repr.plot.width=20, repr.plot.height=10)
+ggplot() +  
+ geom_sf(data = world_map_plus_gdf, aes(fill=factor(cluster_region)), alpha=0.7) +
+ geom_sf(data = sites, aes(color=log_pm25), alpha=0.7) +
+ scale_color_gradient2(low='green', mid='yellow', high='red', midpoint=2.8)
+```
+
+### Cluster by log of ground monitor ${PM}_{2.5}$
+
+
+```{r}
+cat("Sites per cluster_log_region")
+table(sites$cluster_log_region)
+```
+
+
+```{r}
+options(repr.plot.width=10, repr.plot.height=5)
+ggplot() +
+    geom_bar(data=sites, aes(x=factor(cluster_log_region), fill=factor(cluster_log_region)))
+```
+
+
+```{r}
+options(repr.plot.width=20, repr.plot.height=10)
+ggplot() +  
+ geom_sf(data = world_map_plus_gdf, aes(fill=factor(cluster_log_region)), alpha=0.7)
+```
+
+
+```{r}
+ggplot() +  
+ geom_sf(data = world_map_plus_gdf, aes(fill=factor(cluster_log_region)), alpha=0.7) +
+ geom_sf(data = sites, aes(color=log_pm25), alpha=0.7) +
+ scale_color_gradient2(low='green', mid='yellow', high='red', midpoint=2.8)
+```

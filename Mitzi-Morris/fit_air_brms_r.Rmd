@@ -1,0 +1,336 @@
+# BRMS - Air Pollution Example
+
+
+```{r}
+# import all libraries used in this notebook
+require(jsonlite)
+require(dplyr)
+require(ggplot2)
+require(brms)
+require(posterior)
+require(bayesplot)
+require(tidybayes)
+suppressMessages(library(jsonlite))
+suppressMessages(library(dplyr))
+suppressMessages(library(jsonlite))
+suppressMessages(library(ggplot2))
+suppressMessages(library(brms))
+suppressMessages(library(posterior))
+suppressMessages(library(bayesplot))
+suppressMessages(library(tidybayes))
+```
+
+
+```{r}
+options(brms.backend = "cmdstanr")
+options(brms.normalize = FALSE)
+options(width = 100)
+options(digits=3)
+```
+
+
+```{r}
+library(cmdstanr)
+cmdstan_path()
+```
+
+
+```{r}
+# rebuild_cmdstan(cores=4)
+```
+
+## Dataset: Exposure to particulate matter less than 2.5 microns in diameter
+
+The data for this model is in a JSON file, `data/pm_sites.json`.
+
+It consists of measurements of ambient ${PM}_{2.5}$ collected from ground monitors
+together with the corresponding measurement from high-resolution satellite data for that geo-location.
+The data was collected accros 100 countries, which have been grouped into 7 categories by the World Health Organization (WHO),
+and further grouped into 2 alternative clusterings.
+
+Each observation consists of the following:
+
+- 3-letter ISO country code
+- ${PM}_{2.5}$ measurements from ground monitors and corresponding log values
+- ${PM}_{2.5}$ measurements from via high-resolution satellite data and corresponding log values
+- World Health Organization (WHO) super-region name
+- 6-component hierarchical clustering of ground monitor measurements
+- 6-component hierarchical clustering of log ground monitor measurements
+
+
+```{r}
+library(jsonlite)
+sites_json = fromJSON("data/pm_sites.json")
+sites = as.data.frame(sites_json)
+head(sites)
+```
+
+## First BRMS model:  simple linear regression
+
+
+```{r}
+fit_complete_pool = brm(log_pm25 ~ 1 + log_sat, data=sites, cores=4, refresh=0)
+```
+
+The fitted model oject's print method provides information about the model and fitted parameters.
+
+
+```{r}
+fit_complete_pool
+```
+
+View model variable names and estimates:  `variables`, `posterior_summary`
+
+
+```{r}
+variables(fit_complete_pool)
+posterior_summary(fit_complete_pool)
+```
+
+Plot posterior density of population-level parameters and post-warmup trace plots.
+
+
+```{r}
+plot(fit_complete_pool)
+```
+
+Inspect the specified prior: `prior_summary`
+
+
+```{r}
+prior_summary(fit_complete_pool)
+```
+
+BRMS creates the input data from dataframe `sites`.
+
+
+```{r}
+standata_complete_pool = standata(fit_complete_pool)
+
+print(names(standata_complete_pool))
+names_list <- names(standata_complete_pool)
+invisible(lapply(names_list, function(x) {
+cat("Element Name: ", x, "\n")
+cat(str(standata_complete_pool[[x]]), "\n")
+}))
+```
+
+At the same time, BRMS generates a Stan model.
+
+
+```{r}
+stan_complete_pool = stancode(fit_complete_pool)
+cat(stan_complete_pool)
+```
+
+#### Transformed Data and Population-level Intercept
+
+https://vasishth.github.io/bayescogsci/book/ch-reg.html#thm:intercept
+
+> "brms increases sampling efficiency by automatically centering all the predictors internally (that is the population-level design matrix $X$ is internally centered around its column means when brms fits a model)
+
+In a regression, the intercept is the value of the outcome when all predictors are 0. Because the data is centered on zero, the prior on the intercept has location "2.8" (mean value of `log_sat`).
+
+See https://paul-buerkner.github.io/brms/reference/brmsformula.html, section "Parameterization of the population-level intercept".
+
+
+
+```{r}
+round(mean(sites$log_sat), 2)
+```
+
+To override zero-centering of the data, specify the Intercept explicitly in the formula:  `0 + Intercept`
+
+
+```{r}
+fit_complete_pool_data_asis = brm(log_pm25 ~ 0 + Intercept + log_sat, data=sites, cores=4, refresh=0, seed=234098)
+```
+
+How does this compare with formula:  `log_pm25 ~ 1 + log_sat`  (which is equivalent to `log_pm25 ~ log_sat`)?
+
+
+```{r}
+fit_complete_pool
+```
+
+
+```{r}
+fit_complete_pool_data_asis
+```
+
+What are the default priors used?
+
+
+```{r}
+prior_summary(fit_complete_pool)
+```
+
+
+```{r}
+prior_summary(fit_complete_pool_data_asis)
+```
+
+Does this affect the estimates?
+
+
+```{r}
+posterior_summary(fit_complete_pool)
+```
+
+
+```{r}
+posterior_summary(fit_complete_pool_data_asis)
+```
+
+#### Specify weakly informative priors
+
+
+```{r}
+fit_complete_pool_wi_priors = brm(log_pm25 ~ 1 + log_sat, data=sites, cores=4, refresh=0, seed=234098,
+    prior = c(
+    prior(normal(0, 2.5), class = Intercept),
+    prior(normal(0, 2.5), class = sigma),
+    prior(normal(0, 2.5), class = b))
+    )
+```
+
+
+```{r}
+fit_complete_pool_wi_priors
+```
+
+
+```{r}
+prior_summary(fit_complete_pool_wi_priors)
+```
+
+
+```{r}
+plot(fit_complete_pool_wi_priors)
+```
+
+Does this affect the estimates?
+
+
+```{r}
+summary(fit_complete_pool)
+```
+
+
+```{r}
+summary(fit_complete_pool_wi_priors)
+```
+
+
+```{r}
+stan_wi_priors = stancode(fit_complete_pool_wi_priors)
+cat(stan_wi_priors)
+```
+
+## Second BRMS model:  hierarchical linear regression
+
+We specify a hierarchical linear regresson, observations grouped according to grouping factor, varying-slope, varying-intercept.
+
+After trial-and-error, we have determined the sampler settings for NUTS-HMC which obtain a satisfactory fit.
+
+
+```{r}
+fit_super_region = brm(log_pm25 ~ 1 + log_sat + (1 + log_sat | super_region_name),
+                       warmup=400, iter=900, data=sites, cores=4, 
+                       max_treedepth=12, adapt_delta=0.9, refresh=200, seed=234098)
+
+```
+
+
+```{r}
+summary(fit_super_region)
+```
+
+
+```{r}
+stan_super_region=stancode(fit_super_region)
+cat(stan_super_region)
+```
+
+BRMS method `posterior_epred` [Expected Values of the Posterior Predictive Distribution](http://paul-buerkner.github.io/brms/reference/posterior_epred.brmsfit.html)  
+
+>Compute posterior draws of the expected value/mean of the posterior predictive distribution. Can be performed for the data used to fit the model (posterior predictive checks) or for new data. By definition, these predictions have smaller variance than the posterior predictions performed by the posterior_predict.brmsfit method
+
+
+```{r}
+options(repr.plot.width = 20, repr.plot.height = 12)
+sites %>% group_by(super_region_name) %>% add_epred_draws(fit_super_region) %>%
+ggplot(aes(x = log_sat, y = log_pm25, color = factor(super_region_name))) + stat_lineribbon(aes(y = .epred)) +
+geom_point(data = sites, alpha=0.5) +
+scale_fill_brewer(palette = "Greys") + guides(fill="none")
+```
+
+
+```{r}
+sites %>% group_by(super_region_name) %>% add_predicted_draws(fit_super_region) %>%
+ggplot(aes(x = log_sat, y = log_pm25, color = factor(super_region_name))) + stat_lineribbon(aes(y = .prediction)) +
+geom_point(data = sites, alpha=0.1) +
+scale_fill_brewer(palette = "Greys") + guides(fill="none") + facet_wrap(~ super_region_name)
+```
+
+## Alternative groupings
+
+Instead of grouping by WHO region, we use the hierarchical clustering method proposed by Gabry et al ("model 3")
+
+
+```{r}
+fit_cluster_region = brm(log_pm25 ~ 1 + log_sat + (1 + log_sat | cluster_region),
+                       warmup=400, iter=900, data=sites, cores=4, 
+                       max_treedepth=12, adapt_delta=0.9, refresh=200, seed=234098)
+
+```
+
+
+```{r}
+sites %>% group_by(cluster_region) %>% add_predicted_draws(fit_cluster_region) %>%
+ggplot(aes(x = log_sat, y = log_pm25)) + stat_lineribbon(aes(y = .prediction)) +
+geom_point(data = sites, alpha=0.2, color="blue") +
+scale_fill_brewer(palette = "Greys") + guides(fill="none") + facet_wrap(~ cluster_region)
+```
+
+
+```{r}
+fit_cluster_log_region = brm(log_pm25 ~ 1 + log_sat + (1 + log_sat | cluster_log_region),
+                       warmup=400, iter=900, data=sites, cores=4, 
+                       max_treedepth=12, adapt_delta=0.9, refresh=200, seed=234098)
+```
+
+
+```{r}
+sites %>% group_by(cluster_region) %>% add_predicted_draws(fit_cluster_log_region) %>%
+ggplot(aes(x = log_sat, y = log_pm25)) +
+       stat_lineribbon(aes(y = .prediction)) +
+       geom_point(data = sites, alpha=0.2, color="blue") +
+       scale_fill_brewer(palette = "Greys") +
+       facet_wrap(~ cluster_log_region)
+```
+
+## LOO
+
+How do our fitted models compare?
+
+
+```{r}
+(loo_complete = loo(fit_complete_pool))
+```
+
+
+```{r}
+(loo_super_region = loo(fit_super_region))
+```
+
+
+```{r}
+(loo_cluster_region = loo(fit_cluster_region))
+(loo_cluster_log_region = loo(fit_cluster_log_region))
+```
+
+
+```{r}
+loo_compare(loo_complete, loo_super_region, loo_cluster_region, loo_cluster_log_region)
+```
