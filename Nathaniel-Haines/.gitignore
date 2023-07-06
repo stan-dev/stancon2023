@@ -1,0 +1,5 @@
+*.pkl
+.DS_Store
+
+stan/*
+!stan/*.stan
